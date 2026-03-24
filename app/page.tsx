@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import { Brain, Zap, FileText } from "lucide-react";
+import { useState, useCallback, useRef } from "react";
+import { Brain, Zap, FileText, Settings, XCircle, ChevronDown, ChevronRight, CheckCircle2, Loader2 } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { QualityScoresDisplay } from "@/components/quality-scores";
 import { PipelineStages, type PipelineStage } from "@/components/pipeline-stages";
@@ -11,16 +11,75 @@ import { CitationsPanel } from "@/components/citations-panel";
 import { SubQuestionsPanel } from "@/components/sub-questions-panel";
 import { QueryInput } from "@/components/query-input";
 import { ResearchHeader } from "@/components/research-header";
-import { sampleResearchResult, type Citation, type ResearchResult } from "@/lib/sample-data";
+import { SettingsModal } from "@/components/settings-modal";
+import { startResearch } from "@/lib/research-api";
+import type { Citation, ResearchResult } from "@/lib/sample-data";
 
 type ViewTab = "article" | "knowledge" | "sources";
 
+const stageOrder = ["analyzing", "searching", "ranking", "building_kg", "synthesizing", "evaluating", "complete"];
+
+function stageIsActive(stage: string, currentStage: PipelineStage) {
+  return stage === currentStage;
+}
+
+function stageIsDone(stage: string, currentStage: PipelineStage) {
+  const si = stageOrder.indexOf(stage);
+  const ci = stageOrder.indexOf(currentStage);
+  return ci > si;
+}
+
+function IntermediateSection({
+  title, stage, currentStage, ready, badge, children,
+}: {
+  title: string;
+  stage: string;
+  currentStage: PipelineStage;
+  ready: boolean;
+  badge?: string;
+  children: React.ReactNode;
+}) {
+  const active = stageIsActive(stage, currentStage);
+  const done = stageIsDone(stage, currentStage);
+  const [open, setOpen] = useState(true);
+
+  if (!ready && !active) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-3 p-4 text-left hover:bg-muted/30 transition-colors"
+      >
+        {active && !done ? (
+          <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
+        ) : done || ready ? (
+          <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+        ) : null}
+        <span className="text-sm font-semibold text-foreground">{title}</span>
+        {badge && <span className="text-xs text-muted-foreground">{badge}</span>}
+        <span className="ml-auto">
+          {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+        </span>
+      </button>
+      {open && ready && (
+        <div className="space-y-2 px-4 pb-4">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const [result, setResult] = useState<ResearchResult | null>(null);
+  const [partialResult, setPartialResult] = useState<Partial<ResearchResult>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [currentStage, setCurrentStage] = useState<PipelineStage>("idle");
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
   const [activeTab, setActiveTab] = useState<ViewTab>("article");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const handleCitationClick = useCallback((citation: Citation) => {
     setActiveCitation(citation);
@@ -32,32 +91,77 @@ export default function HomePage() {
     }, 100);
   }, []);
 
-  const simulateResearch = useCallback(async (query: string) => {
+  const handleCancel = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsLoading(false);
+    setCurrentStage("idle");
+  }, []);
+
+  const handleResearch = useCallback(async (query: string) => {
+    // Cancel any in-flight request
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setIsLoading(true);
     setResult(null);
+    setPartialResult({ query, language: "en" });
     setActiveCitation(null);
+    setCurrentStage("analyzing");
 
-    const stages: PipelineStage[] = [
-      "analyzing",
-      "searching",
-      "ranking",
-      "knowledge_graph",
-      "synthesizing",
-      "quality_check",
-      "complete",
-    ];
+    let searchIterations = 0;
+    let revisionCount = 0;
 
-    for (const stage of stages) {
-      setCurrentStage(stage);
-      await new Promise((resolve) => setTimeout(resolve, 800));
-    }
-
-    // Use the sample data with the user's query
-    setResult({
-      ...sampleResearchResult,
-      query,
-    });
-    setIsLoading(false);
+    await startResearch(query, "en", {
+      onStageChange: (stage) => setCurrentStage(stage as PipelineStage),
+      onSubQuestions: (subQuestions) =>
+        setPartialResult((prev) => ({ ...prev, subQuestions })),
+      onSearchResults: (searchResults, iteration) => {
+        searchIterations = iteration;
+        setPartialResult((prev) => ({
+          ...prev,
+          searchResults: [...(prev.searchResults ?? []), ...searchResults],
+          searchIterations: iteration,
+        }));
+      },
+      onRanking: (searchResults) =>
+        setPartialResult((prev) => ({ ...prev, searchResults })),
+      onKnowledgeGraph: (kgEntities, kgRelations) =>
+        setPartialResult((prev) => ({ ...prev, kgEntities, kgRelations })),
+      onSynthesis: (article, citations) =>
+        setPartialResult((prev) => ({ ...prev, article, citations })),
+      onQuality: (qualityScores, _passed, revisions) => {
+        revisionCount = revisions;
+        setPartialResult((prev) => ({ ...prev, qualityScores }));
+      },
+      onComplete: () => {
+        setPartialResult((prev) => {
+          const final: ResearchResult = {
+            query,
+            language: prev.language ?? "en",
+            subQuestions: prev.subQuestions ?? [],
+            searchResults: prev.searchResults ?? [],
+            kgEntities: prev.kgEntities ?? [],
+            kgRelations: prev.kgRelations ?? [],
+            article: prev.article ?? "",
+            citations: prev.citations ?? [],
+            qualityScores: prev.qualityScores ?? {
+              comprehensiveness: 0, insight: 0, instruction_following: 0, readability: 0,
+            },
+            searchIterations,
+            revisions: revisionCount,
+          };
+          setResult(final);
+          return prev;
+        });
+        setIsLoading(false);
+      },
+      onError: (message) => {
+        console.error("Research error:", message);
+        setIsLoading(false);
+      },
+    }, controller.signal);
   }, []);
 
   return (
@@ -75,9 +179,18 @@ export default function HomePage() {
                 <p className="text-xs text-muted-foreground">Deep Research Agent</p>
               </div>
             </div>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Zap className="h-4 w-4 text-primary" />
-              <span>PhD-level research at your fingertips</span>
+            <div className="flex items-center gap-4 text-sm text-muted-foreground">
+              <button
+                onClick={() => setSettingsOpen(true)}
+                className="flex items-center gap-1.5 rounded-md px-3 py-1.5 hover:bg-muted transition-colors"
+              >
+                <Settings className="h-4 w-4" />
+                <span>Settings</span>
+              </button>
+              <div className="flex items-center gap-2">
+                <Zap className="h-4 w-4 text-primary" />
+                <span>PhD-level research at your fingertips</span>
+              </div>
             </div>
           </div>
         </div>
@@ -102,7 +215,7 @@ export default function HomePage() {
               </div>
 
               <div className="rounded-xl border border-border bg-card p-6">
-                <QueryInput onSubmit={simulateResearch} isLoading={isLoading} />
+                <QueryInput onSubmit={handleResearch} isLoading={isLoading} />
               </div>
 
               <div className="grid grid-cols-3 gap-4">
@@ -144,7 +257,7 @@ export default function HomePage() {
                 {/* New query input */}
                 <div className="rounded-xl border border-border bg-card p-4">
                   <QueryInput
-                    onSubmit={simulateResearch}
+                    onSubmit={handleResearch}
                     isLoading={isLoading}
                     initialQuery={result?.query}
                   />
@@ -154,15 +267,15 @@ export default function HomePage() {
                 <div className="rounded-xl border border-border bg-card p-4">
                   <PipelineStages
                     currentStage={currentStage}
-                    searchIteration={result?.searchIterations || 0}
+                    searchIteration={result?.searchIterations || partialResult.searchIterations || 0}
                     maxIterations={3}
                   />
                 </div>
 
                 {/* Quality scores */}
-                {result && (
+                {(result?.qualityScores || partialResult.qualityScores) && (
                   <div className="rounded-xl border border-border bg-card p-4">
-                    <QualityScoresDisplay scores={result.qualityScores} />
+                    <QualityScoresDisplay scores={(result?.qualityScores || partialResult.qualityScores)!} />
                   </div>
                 )}
               </div>
@@ -171,16 +284,90 @@ export default function HomePage() {
             {/* Main content area */}
             <div className="lg:col-span-6">
               {isLoading && !result ? (
-                <div className="rounded-xl border border-border bg-card p-8">
-                  <div className="flex flex-col items-center justify-center py-20 text-center">
-                    <div className="h-12 w-12 rounded-full border-4 border-primary border-t-transparent animate-spin mb-4" />
-                    <h3 className="text-lg font-semibold text-foreground">
-                      Conducting Research
-                    </h3>
-                    <p className="text-sm text-muted-foreground mt-2">
-                      Analyzing query, searching sources, and synthesizing findings...
-                    </p>
+                <div className="space-y-4">
+                  {/* Cancel bar */}
+                  <div className="flex items-center justify-between rounded-xl border border-border bg-card p-4">
+                    <div className="flex items-center gap-3">
+                      <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                      <span className="text-sm font-medium text-foreground">Researching...</span>
+                    </div>
+                    <button
+                      onClick={handleCancel}
+                      className="flex items-center gap-2 rounded-md bg-destructive/10 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/20 transition-colors"
+                    >
+                      <XCircle className="h-4 w-4" />
+                      Cancel
+                    </button>
                   </div>
+
+                  <IntermediateSection title="Query Analysis" stage="analyzing" currentStage={currentStage}
+                    ready={!!partialResult.subQuestions?.length}>
+                    {partialResult.subQuestions?.map((q, i) => (
+                      <div key={i} className="flex items-start gap-2 rounded-lg border border-border bg-card/50 p-3">
+                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
+                          {q.priority}
+                        </span>
+                        <div>
+                          <p className="text-sm text-foreground">{q.question}</p>
+                          {q.searchQueries.length > 0 && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Queries: {q.searchQueries.join(", ")}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </IntermediateSection>
+
+                  <IntermediateSection title="Search Results" stage="searching" currentStage={currentStage}
+                    ready={!!partialResult.searchResults?.length}
+                    badge={partialResult.searchResults?.length ? `${partialResult.searchResults.length} results` : undefined}>
+                    {partialResult.searchResults?.slice(0, 10).map((r, i) => (
+                      <div key={i} className="rounded-lg border border-border bg-card/50 p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <a href={r.url} target="_blank" rel="noopener noreferrer"
+                            className="text-sm font-medium text-primary hover:underline line-clamp-1">{r.title}</a>
+                          {r.relevanceScore > 0 && (
+                            <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                              {r.relevanceScore.toFixed(1)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{r.snippet}</p>
+                      </div>
+                    ))}
+                    {(partialResult.searchResults?.length ?? 0) > 10 && (
+                      <p className="text-xs text-muted-foreground text-center">
+                        + {partialResult.searchResults!.length - 10} more results
+                      </p>
+                    )}
+                  </IntermediateSection>
+
+                  <IntermediateSection title="Knowledge Graph" stage="building_kg" currentStage={currentStage}
+                    ready={!!partialResult.kgEntities?.length}>
+                    <KnowledgeGraphPanel
+                      entities={partialResult.kgEntities ?? []}
+                      relations={partialResult.kgRelations ?? []}
+                    />
+                  </IntermediateSection>
+
+                  <IntermediateSection title="Article Draft" stage="synthesizing" currentStage={currentStage}
+                    ready={!!partialResult.article}>
+                    {partialResult.article && (
+                      <MarkdownRenderer
+                        content={partialResult.article}
+                        citations={partialResult.citations ?? []}
+                        onCitationClick={handleCitationClick}
+                      />
+                    )}
+                  </IntermediateSection>
+
+                  <IntermediateSection title="Quality Assessment" stage="evaluating" currentStage={currentStage}
+                    ready={!!partialResult.qualityScores}>
+                    {partialResult.qualityScores && (
+                      <QualityScoresDisplay scores={partialResult.qualityScores} />
+                    )}
+                  </IntermediateSection>
                 </div>
               ) : result ? (
                 <div className="rounded-xl border border-border bg-card">
@@ -253,26 +440,34 @@ export default function HomePage() {
             {/* Right sidebar - Sources and citations */}
             <aside className="hidden lg:block lg:col-span-3 space-y-6">
               <div className="sticky top-24 space-y-6">
-                {result && (
+                {(result || isLoading) && (
                   <>
-                    <div className="rounded-xl border border-border bg-card p-4">
-                      <SubQuestionsPanel questions={result.subQuestions} />
-                    </div>
-                    <div className="rounded-xl border border-border bg-card p-4">
-                      <KnowledgeGraphPanel
-                        entities={result.kgEntities}
-                        relations={result.kgRelations}
-                      />
-                    </div>
-                    <div className="rounded-xl border border-border bg-card p-4">
-                      <SearchResultsPanel results={result.searchResults} />
-                    </div>
-                    <div className="rounded-xl border border-border bg-card p-4">
-                      <CitationsPanel
-                        citations={result.citations}
-                        activeCitation={activeCitation}
-                      />
-                    </div>
+                    {(result?.subQuestions || partialResult.subQuestions)?.length ? (
+                      <div className="rounded-xl border border-border bg-card p-4">
+                        <SubQuestionsPanel questions={(result?.subQuestions || partialResult.subQuestions)!} />
+                      </div>
+                    ) : null}
+                    {(result?.kgEntities || partialResult.kgEntities)?.length ? (
+                      <div className="rounded-xl border border-border bg-card p-4">
+                        <KnowledgeGraphPanel
+                          entities={(result?.kgEntities || partialResult.kgEntities)!}
+                          relations={(result?.kgRelations || partialResult.kgRelations) ?? []}
+                        />
+                      </div>
+                    ) : null}
+                    {(result?.searchResults || partialResult.searchResults)?.length ? (
+                      <div className="rounded-xl border border-border bg-card p-4">
+                        <SearchResultsPanel results={(result?.searchResults || partialResult.searchResults)!} />
+                      </div>
+                    ) : null}
+                    {(result?.citations || partialResult.citations)?.length ? (
+                      <div className="rounded-xl border border-border bg-card p-4">
+                        <CitationsPanel
+                          citations={(result?.citations || partialResult.citations)!}
+                          activeCitation={activeCitation}
+                        />
+                      </div>
+                    ) : null}
                   </>
                 )}
               </div>
@@ -280,6 +475,8 @@ export default function HomePage() {
           </div>
         )}
       </main>
+
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

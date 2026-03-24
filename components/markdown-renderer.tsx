@@ -27,14 +27,15 @@ export function MarkdownRenderer({
     let codeContent: string[] = [];
     let codeLanguage = "";
     let listItems: { level: number; content: string; ordered: boolean }[] = [];
+    let listCounter = 0;
 
     const flushList = () => {
       if (listItems.length === 0) return null;
       const items = [...listItems];
       listItems = [];
-      
+
       return (
-        <ul className="my-4 ml-6 list-disc space-y-2 text-foreground/90">
+        <ul key={`list-${listCounter++}`} className="my-4 ml-6 list-disc space-y-2 text-foreground/90">
           {items.map((item, i) => (
             <li key={i} className="leading-relaxed">
               {renderInlineContent(item.content)}

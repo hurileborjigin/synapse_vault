@@ -3,3 +3,7 @@ uv.lock
 __pycache__/
 CLAUDE.md
 results/
+node_modules/
+.next/
+.venv/
+.claude/
