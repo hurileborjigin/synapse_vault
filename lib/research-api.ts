@@ -43,8 +43,14 @@ export interface StreamCallbacks {
   onKnowledgeGraph?: (entities: KGEntity[], relations: KGRelation[], gaps: string[]) => void;
   onSynthesis?: (article: string, citations: Citation[]) => void;
   onQuality?: (scores: QualityScores, passed: boolean, revisionCount: number) => void;
-  onComplete?: () => void;
+  onComplete?: (result?: ResearchResult) => void;
   onError?: (message: string) => void;
+}
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof Error && /abort/i.test(err.message)) return true;
+  return false;
 }
 
 export async function startResearch(
@@ -53,15 +59,23 @@ export async function startResearch(
   callbacks: StreamCallbacks,
   signal?: AbortSignal
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/research`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, language }),
-    signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/research`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, language }),
+      signal,
+    });
+  } catch (err) {
+    if (isAbortError(err)) return;
+    callbacks.onError?.(err instanceof Error ? err.message : String(err));
+    return;
+  }
 
   if (!res.ok) {
-    const text = await res.text();
+    let text = "";
+    try { text = await res.text(); } catch { /* aborted */ }
     callbacks.onError?.(text || `HTTP ${res.status}`);
     return;
   }
@@ -74,34 +88,51 @@ export async function startResearch(
 
   const decoder = new TextDecoder();
   let buffer = "";
+  let currentEvent = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
 
-    let currentEvent = "";
-    for (const line of lines) {
-      if (line.startsWith("event:")) {
-        currentEvent = line.slice(6).trim();
-      } else if (line.startsWith("data:") && currentEvent) {
-        const raw = line.slice(5).trim();
-        try {
-          const data = JSON.parse(raw);
-          dispatchEvent(currentEvent, data, callbacks);
-        } catch {
-          // skip malformed JSON
+      for (const line of lines) {
+        if (line.startsWith("event:")) {
+          currentEvent = line.slice(6).trim();
+        } else if (line.startsWith("data:") && currentEvent) {
+          const raw = line.slice(5).trim();
+          try {
+            const data = JSON.parse(raw);
+            dispatchEvent(currentEvent, data, callbacks);
+          } catch {
+            // skip malformed JSON
+          }
+          currentEvent = "";
         }
-        currentEvent = "";
       }
     }
+  } catch (err) {
+    if (isAbortError(err)) return;
+    callbacks.onError?.(err instanceof Error ? err.message : String(err));
   }
 }
 
 function dispatchEvent(event: string, data: Record<string, unknown>, cb: StreamCallbacks) {
+  console.log(`[SSE] event=${event}`, event === "synthesis"
+    ? { articleLen: (data.article as string)?.length ?? 0, citations: (data.citations as unknown[])?.length ?? 0 }
+    : event === "complete"
+    ? { hasResult: !!data.result, articleLen: ((data.result as Record<string,unknown>)?.article as string)?.length ?? 0 }
+    : event === "quality"
+    ? { scores: data.quality_scores, passed: data.quality_passed, revision: data.revision_count }
+    : event === "stage"
+    ? { stage: data.stage, status: data.status }
+    : event === "error"
+    ? { message: data.message }
+    : { keys: Object.keys(data) }
+  );
   switch (event) {
     case "stage":
       cb.onStageChange?.(data.stage as string, data.status as string);
@@ -137,9 +168,31 @@ function dispatchEvent(event: string, data: Record<string, unknown>, cb: StreamC
       cb.onQuality?.(scores, data.quality_passed as boolean, data.revision_count as number);
       break;
     }
-    case "complete":
-      cb.onComplete?.();
+    case "complete": {
+      const rawResult = data.result as Record<string, unknown> | undefined;
+      const converted = rawResult
+        ? ({
+            query: rawResult.query as string,
+            language: rawResult.language as string,
+            subQuestions: convertKeys<SubQuestion[]>((rawResult.sub_questions ?? []) as SubQuestion[]),
+            searchResults: convertKeys<SearchResult[]>((rawResult.search_results ?? []) as SearchResult[]),
+            kgEntities: convertKeys<KGEntity[]>((rawResult.kg_entities ?? []) as KGEntity[]),
+            kgRelations: convertKeys<KGRelation[]>((rawResult.kg_relations ?? []) as KGRelation[]),
+            article: (rawResult.article as string) ?? "",
+            citations: convertKeys<Citation[]>((rawResult.citations ?? []) as Citation[]),
+            qualityScores: (rawResult.quality_scores as QualityScores) ?? {
+              comprehensiveness: 0,
+              insight: 0,
+              instruction_following: 0,
+              readability: 0,
+            },
+            searchIterations: (rawResult.search_iterations as number) ?? 0,
+            revisions: (rawResult.revisions as number) ?? 0,
+          } satisfies ResearchResult)
+        : undefined;
+      cb.onComplete?.(converted);
       break;
+    }
     case "error":
       cb.onError?.(data.message as string);
       break;
@@ -161,6 +214,18 @@ export interface AgentSettings {
   minCitations: number;
   qualityThreshold: number;
   maxConcurrentSearches: number;
+  // Provider-specific
+  azureOpenaiEndpoint: string;
+  azureOpenaiApiVersion: string;
+  compatibleBaseUrl: string;
+  // API keys (masked on GET)
+  anthropicApiKey: string;
+  openaiApiKey: string;
+  azureOpenaiApiKey: string;
+  compatibleApiKey: string;
+  jinaApiKey: string;
+  braveApiKey: string;
+  tavilyApiKey: string;
 }
 
 export async function getSettings(): Promise<AgentSettings> {

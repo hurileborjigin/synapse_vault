@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
-import { Brain, Zap, FileText, Settings, XCircle, ChevronDown, ChevronRight, CheckCircle2, Loader2 } from "lucide-react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { Brain, Zap, FileText, Settings, XCircle, ChevronDown, ChevronRight, CheckCircle2, Loader2, PanelLeftOpen, PanelRightOpen, PanelLeftClose, PanelRightClose, History, Clock, Network } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { QualityScoresDisplay } from "@/components/quality-scores";
 import { PipelineStages, type PipelineStage } from "@/components/pipeline-stages";
@@ -12,12 +12,14 @@ import { SubQuestionsPanel } from "@/components/sub-questions-panel";
 import { QueryInput } from "@/components/query-input";
 import { ResearchHeader } from "@/components/research-header";
 import { SettingsModal } from "@/components/settings-modal";
+import { SessionHistoryPanel } from "@/components/session-history-panel";
 import { startResearch } from "@/lib/research-api";
+import { getSessions, saveSession, deleteSession, clearSessions, type SavedSession } from "@/lib/session-history";
 import type { Citation, ResearchResult } from "@/lib/sample-data";
 
 type ViewTab = "article" | "knowledge" | "sources";
 
-const stageOrder = ["analyzing", "searching", "ranking", "building_kg", "synthesizing", "evaluating", "complete"];
+const stageOrder = ["analyzing", "searching", "ranking", "knowledge_graph", "synthesizing", "quality_check", "complete"];
 
 function stageIsActive(stage: string, currentStage: PipelineStage) {
   return stage === currentStage;
@@ -78,8 +80,33 @@ export default function HomePage() {
   const [currentStage, setCurrentStage] = useState<PipelineStage>("idle");
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
   const [activeTab, setActiveTab] = useState<ViewTab>("article");
+  const [centerView, setCenterView] = useState<"article" | "knowledge">("article");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Collapsible sidebars
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+
+  // Session history
+  const [sessions, setSessions] = useState<SavedSession[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const refreshSessions = useCallback(async () => {
+    setSessions(await getSessions());
+  }, []);
+
+  useEffect(() => {
+    void refreshSessions();
+  }, [refreshSessions]);
+
+  // Column span classes (statically analyzable for Tailwind)
+  const mainSpanClass: Record<number, string> = { 6: "lg:col-span-6", 8: "lg:col-span-8", 10: "lg:col-span-10" };
+  const leftSpan = leftCollapsed ? 1 : 3;
+  const rightSpan = rightCollapsed ? 1 : 3;
+  const mainSpan = 12 - leftSpan - rightSpan;
+  const leftSpanClass = leftCollapsed ? "lg:col-span-1" : "lg:col-span-3";
+  const rightSpanClass = rightCollapsed ? "lg:col-span-1" : "lg:col-span-3";
 
   const handleCitationClick = useCallback((citation: Citation) => {
     setActiveCitation(citation);
@@ -114,10 +141,16 @@ export default function HomePage() {
     let revisionCount = 0;
 
     await startResearch(query, "en", {
-      onStageChange: (stage) => setCurrentStage(stage as PipelineStage),
-      onSubQuestions: (subQuestions) =>
-        setPartialResult((prev) => ({ ...prev, subQuestions })),
+      onStageChange: (stage) => {
+        console.log(`[PAGE] stageChange → ${stage}`);
+        setCurrentStage(stage as PipelineStage);
+      },
+      onSubQuestions: (subQuestions) => {
+        console.log(`[PAGE] subQuestions: ${subQuestions.length}`);
+        setPartialResult((prev) => ({ ...prev, subQuestions }));
+      },
       onSearchResults: (searchResults, iteration) => {
+        console.log(`[PAGE] searchResults: ${searchResults.length}, iteration=${iteration}`);
         searchIterations = iteration;
         setPartialResult((prev) => ({
           ...prev,
@@ -125,19 +158,27 @@ export default function HomePage() {
           searchIterations: iteration,
         }));
       },
-      onRanking: (searchResults) =>
-        setPartialResult((prev) => ({ ...prev, searchResults })),
-      onKnowledgeGraph: (kgEntities, kgRelations) =>
-        setPartialResult((prev) => ({ ...prev, kgEntities, kgRelations })),
-      onSynthesis: (article, citations) =>
-        setPartialResult((prev) => ({ ...prev, article, citations })),
+      onRanking: (searchResults) => {
+        console.log(`[PAGE] ranking: ${searchResults.length} results`);
+        setPartialResult((prev) => ({ ...prev, searchResults }));
+      },
+      onKnowledgeGraph: (kgEntities, kgRelations) => {
+        console.log(`[PAGE] knowledgeGraph: ${kgEntities.length} entities, ${kgRelations.length} relations`);
+        setPartialResult((prev) => ({ ...prev, kgEntities, kgRelations }));
+      },
+      onSynthesis: (article, citations) => {
+        console.log(`[PAGE] synthesis: article=${article?.length ?? 0} chars, citations=${citations?.length ?? 0}`);
+        setPartialResult((prev) => ({ ...prev, article, citations }));
+      },
       onQuality: (qualityScores, _passed, revisions) => {
+        console.log(`[PAGE] quality: passed=${_passed}, revision=${revisions}`, qualityScores);
         revisionCount = revisions;
         setPartialResult((prev) => ({ ...prev, qualityScores }));
       },
-      onComplete: () => {
+      onComplete: (completedResult) => {
+        console.log(`[PAGE] complete: hasResult=${!!completedResult}, articleLen=${completedResult?.article?.length ?? 0}, citations=${completedResult?.citations?.length ?? 0}`);
         setPartialResult((prev) => {
-          const final: ResearchResult = {
+          const final: ResearchResult = completedResult ?? {
             query,
             language: prev.language ?? "en",
             subQuestions: prev.subQuestions ?? [],
@@ -152,34 +193,88 @@ export default function HomePage() {
             searchIterations,
             revisions: revisionCount,
           };
+          console.log(`[PAGE] setting final result: article=${final.article.length} chars, citations=${final.citations.length}`);
           setResult(final);
+          saveSession(final);
+          void refreshSessions();
           return prev;
         });
         setIsLoading(false);
       },
       onError: (message) => {
-        console.error("Research error:", message);
+        console.error("[PAGE] error:", message);
         setIsLoading(false);
       },
-    }, controller.signal);
+    }, controller.signal).catch((err) => {
+      console.error("[PAGE] startResearch threw:", err);
+    });
   }, []);
+
+  const handleLoadSession = useCallback((session: SavedSession) => {
+    setResult(session.result);
+    setPartialResult({});
+    setIsLoading(false);
+    setCurrentStage("complete");
+    setHistoryOpen(false);
+  }, []);
+
+  const handleDeleteSession = useCallback((id: string) => {
+    void deleteSession(id).then(refreshSessions);
+  }, [refreshSessions]);
+
+  const handleClearSessions = useCallback(() => {
+    void clearSessions().then(refreshSessions);
+  }, [refreshSessions]);
 
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex h-16 items-center justify-between">
-            <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                abortRef.current?.abort();
+                abortRef.current = null;
+                setResult(null);
+                setPartialResult({});
+                setIsLoading(false);
+                setCurrentStage("idle");
+                setActiveCitation(null);
+                setActiveTab("article");
+              }}
+              className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+            >
               <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
                 <Brain className="h-5 w-5 text-primary-foreground" />
               </div>
-              <div>
+              <div className="text-left">
                 <h1 className="text-lg font-semibold text-foreground">Synapse Vault</h1>
                 <p className="text-xs text-muted-foreground">Deep Research Agent</p>
               </div>
-            </div>
+            </button>
             <div className="flex items-center gap-4 text-sm text-muted-foreground">
+              <div className="relative">
+                <button
+                  onClick={() => setHistoryOpen(!historyOpen)}
+                  className="flex items-center gap-1.5 rounded-md px-3 py-1.5 hover:bg-muted transition-colors"
+                >
+                  <History className="h-4 w-4" />
+                  <span>History</span>
+                  {sessions.length > 0 && (
+                    <span className="ml-1 rounded-full bg-primary/10 px-1.5 text-xs text-primary">{sessions.length}</span>
+                  )}
+                </button>
+                {historyOpen && (
+                  <SessionHistoryPanel
+                    sessions={sessions}
+                    onLoad={handleLoadSession}
+                    onDelete={handleDeleteSession}
+                    onClearAll={handleClearSessions}
+                    onClose={() => setHistoryOpen(false)}
+                  />
+                )}
+              </div>
               <button
                 onClick={() => setSettingsOpen(true)}
                 className="flex items-center gap-1.5 rounded-md px-3 py-1.5 hover:bg-muted transition-colors"
@@ -196,7 +291,7 @@ export default function HomePage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <main className="mx-auto px-4 py-8 sm:px-6 lg:px-8">
         {!result && !isLoading ? (
           // Initial state - show query input prominently
           <div className="flex flex-col items-center justify-center py-20">
@@ -246,43 +341,79 @@ export default function HomePage() {
                   </div>
                 ))}
               </div>
+
+              {sessions.length > 0 && (
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
+                    <Clock className="h-4 w-4" />
+                    Recent Research
+                  </h3>
+                  <div className="space-y-2">
+                    {sessions.slice(0, 5).map((session) => (
+                      <button
+                        key={session.id}
+                        onClick={() => handleLoadSession(session)}
+                        className="w-full rounded-lg border border-border bg-card/50 p-3 text-left hover:bg-muted/30 transition-colors"
+                      >
+                        <p className="text-sm text-foreground truncate">{session.query}</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {new Date(session.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         ) : (
           // Loading or results state
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Left sidebar - Pipeline and metadata */}
-            <aside className="lg:col-span-3 space-y-6">
+            <aside className={`${leftSpanClass} space-y-6`}>
               <div className="sticky top-24 space-y-6">
-                {/* New query input */}
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <QueryInput
-                    onSubmit={handleResearch}
-                    isLoading={isLoading}
-                    initialQuery={result?.query}
-                  />
-                </div>
+                {/* Collapse toggle - desktop only */}
+                <button
+                  onClick={() => setLeftCollapsed(!leftCollapsed)}
+                  className="hidden lg:flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {leftCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+                  {!leftCollapsed && <span>Collapse</span>}
+                </button>
 
-                {/* Pipeline stages */}
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <PipelineStages
-                    currentStage={currentStage}
-                    searchIteration={result?.searchIterations || partialResult.searchIterations || 0}
-                    maxIterations={3}
-                  />
-                </div>
+                {!leftCollapsed && (
+                  <>
+                    {/* New query input */}
+                    <div className="rounded-xl border border-border bg-card p-4">
+                      <QueryInput
+                        onSubmit={handleResearch}
+                        isLoading={isLoading}
+                        initialQuery={result?.query}
+                      />
+                    </div>
 
-                {/* Quality scores */}
-                {(result?.qualityScores || partialResult.qualityScores) && (
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <QualityScoresDisplay scores={(result?.qualityScores || partialResult.qualityScores)!} />
-                  </div>
+                    {/* Pipeline stages */}
+                    <div className="rounded-xl border border-border bg-card p-4">
+                      <PipelineStages
+                        currentStage={currentStage}
+                        searchIteration={result?.searchIterations || partialResult.searchIterations || 0}
+                        maxIterations={3}
+                      />
+                    </div>
+
+                    {/* Quality scores */}
+                    {(result?.qualityScores || partialResult.qualityScores) && (
+                      <div className="rounded-xl border border-border bg-card p-4">
+                        <QualityScoresDisplay scores={(result?.qualityScores || partialResult.qualityScores)!} />
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </aside>
 
             {/* Main content area */}
-            <div className="lg:col-span-6">
+            <div className={mainSpanClass[mainSpan] || "lg:col-span-6"}>
               {isLoading && !result ? (
                 <div className="space-y-4">
                   {/* Cancel bar */}
@@ -343,7 +474,7 @@ export default function HomePage() {
                     )}
                   </IntermediateSection>
 
-                  <IntermediateSection title="Knowledge Graph" stage="building_kg" currentStage={currentStage}
+                  <IntermediateSection title="Knowledge Graph" stage="knowledge_graph" currentStage={currentStage}
                     ready={!!partialResult.kgEntities?.length}>
                     <KnowledgeGraphPanel
                       entities={partialResult.kgEntities ?? []}
@@ -362,7 +493,7 @@ export default function HomePage() {
                     )}
                   </IntermediateSection>
 
-                  <IntermediateSection title="Quality Assessment" stage="evaluating" currentStage={currentStage}
+                  <IntermediateSection title="Quality Assessment" stage="quality_check" currentStage={currentStage}
                     ready={!!partialResult.qualityScores}>
                     {partialResult.qualityScores && (
                       <QualityScoresDisplay scores={partialResult.qualityScores} />
@@ -371,7 +502,33 @@ export default function HomePage() {
                 </div>
               ) : result ? (
                 <div className="rounded-xl border border-border bg-card">
-                  {/* Tabs for different views on mobile */}
+                  {/* Desktop: Article / Knowledge Graph toggle */}
+                  <div className="hidden lg:flex border-b border-border">
+                    <button
+                      onClick={() => setCenterView("article")}
+                      className={`flex items-center gap-2 px-5 py-3 text-sm font-medium transition-colors ${
+                        centerView === "article"
+                          ? "border-b-2 border-primary text-primary"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <FileText className="h-4 w-4" />
+                      Article
+                    </button>
+                    <button
+                      onClick={() => setCenterView("knowledge")}
+                      className={`flex items-center gap-2 px-5 py-3 text-sm font-medium transition-colors ${
+                        centerView === "knowledge"
+                          ? "border-b-2 border-primary text-primary"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Network className="h-4 w-4" />
+                      Knowledge Graph
+                    </button>
+                  </div>
+
+                  {/* Mobile tabs */}
                   <div className="lg:hidden border-b border-border">
                     <div className="flex">
                       {[
@@ -394,8 +551,8 @@ export default function HomePage() {
                     </div>
                   </div>
 
-                  {/* Article content */}
-                  <div className={`p-6 ${activeTab !== "article" ? "hidden lg:block" : ""}`}>
+                  {/* Desktop: Article content (hidden when KG selected) */}
+                  <div className={`p-6 ${centerView !== "article" ? "hidden" : ""} ${activeTab !== "article" ? "hidden lg:block" : ""}`}>
                     <ResearchHeader
                       query={result.query}
                       language={result.language}
@@ -410,6 +567,14 @@ export default function HomePage() {
                         onCitationClick={handleCitationClick}
                       />
                     </div>
+                  </div>
+
+                  {/* Desktop: Center Knowledge Graph view */}
+                  <div className={`p-6 ${centerView !== "knowledge" ? "hidden" : ""} hidden lg:block`}>
+                    <KnowledgeGraphPanel
+                      entities={result.kgEntities}
+                      relations={result.kgRelations}
+                    />
                   </div>
 
                   {/* Mobile: Knowledge Graph */}
@@ -438,9 +603,18 @@ export default function HomePage() {
             </div>
 
             {/* Right sidebar - Sources and citations */}
-            <aside className="hidden lg:block lg:col-span-3 space-y-6">
+            <aside className={`hidden lg:block ${rightSpanClass} space-y-6`}>
               <div className="sticky top-24 space-y-6">
-                {(result || isLoading) && (
+                {/* Collapse toggle */}
+                <button
+                  onClick={() => setRightCollapsed(!rightCollapsed)}
+                  className="hidden lg:flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors ml-auto"
+                >
+                  {!rightCollapsed && <span>Collapse</span>}
+                  {rightCollapsed ? <PanelRightOpen className="h-4 w-4" /> : <PanelRightClose className="h-4 w-4" />}
+                </button>
+
+                {!rightCollapsed && (result || isLoading) && (
                   <>
                     {(result?.subQuestions || partialResult.subQuestions)?.length ? (
                       <div className="rounded-xl border border-border bg-card p-4">

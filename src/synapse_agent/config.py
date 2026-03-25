@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import os
 from enum import Enum
+from pathlib import Path
+
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings
+
+# Load .env before anything reads os.getenv
+_env_path = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(_env_path, override=False)
 
 
 class LLMProvider(str, Enum):
@@ -34,7 +41,7 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     azure_openai_api_key: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_KEY", ""))
     azure_openai_endpoint: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_ENDPOINT", ""))
-    azure_openai_api_version: str = "2024-02-15-preview"
+    azure_openai_api_version: str = "2024-06-01"
     compatible_api_key: str = Field(default_factory=lambda: os.getenv("COMPATIBLE_API_KEY", ""))
     compatible_base_url: str = Field(default_factory=lambda: os.getenv("COMPATIBLE_BASE_URL", ""))
 

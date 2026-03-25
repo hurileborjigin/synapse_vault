@@ -1,7 +1,29 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Citation } from "@/lib/sample-data";
+
+function CitationTooltip({ citation }: { citation: Citation }) {
+  return (
+    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 rounded-lg border border-border bg-popover p-3 shadow-lg opacity-0 pointer-events-none group-hover/cite:opacity-100 group-hover/cite:pointer-events-auto transition-opacity duration-150 z-50 block">
+      <span className="block text-sm font-medium text-foreground line-clamp-2">{citation.title}</span>
+      {citation.snippet && (
+        <span className="block mt-1 text-xs text-muted-foreground line-clamp-3">{citation.snippet}</span>
+      )}
+      <a
+        href={citation.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-2 block text-xs text-primary truncate hover:underline"
+      >
+        {citation.url}
+      </a>
+      {/* Arrow */}
+      <span className="absolute top-full left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-border" />
+      <span className="absolute top-full left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-popover" />
+    </span>
+  );
+}
 
 interface MarkdownRendererProps {
   content: string;
@@ -63,14 +85,15 @@ export function MarkdownRenderer({
               {indices.map((idx) => {
                 const citation = citationMap.get(idx);
                 return (
-                  <button
-                    key={idx}
-                    onClick={() => citation && onCitationClick?.(citation)}
-                    className="citation-link"
-                    title={citation?.title || `Citation ${idx}`}
-                  >
-                    {idx}
-                  </button>
+                  <span key={idx} className="relative inline-block group/cite">
+                    <button
+                      onClick={() => citation && onCitationClick?.(citation)}
+                      className="citation-link"
+                    >
+                      {idx}
+                    </button>
+                    {citation && <CitationTooltip citation={citation} />}
+                  </span>
                 );
               })}
             </span>
