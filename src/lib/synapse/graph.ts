@@ -15,10 +15,17 @@ import { synthesizer } from "./nodes/synthesizer";
 import { qualityGate } from "./nodes/quality-gate";
 
 // ---------------------------------------------------------------------------
-// Checkpointer (in-memory, persists for process lifetime)
+// Checkpointer — module-level singleton so run + resume share the same state.
+// Must NOT be created inside buildGraph(), otherwise resume gets a fresh
+// (empty) checkpointer and the pipeline completes immediately.
 // ---------------------------------------------------------------------------
 
-const checkpointer = new MemorySaver();
+let _checkpointer: MemorySaver | null = null;
+
+function getCheckpointer(): MemorySaver {
+  if (!_checkpointer) _checkpointer = new MemorySaver();
+  return _checkpointer;
+}
 
 // ---------------------------------------------------------------------------
 // Conditional edge functions
@@ -79,5 +86,5 @@ export function buildGraph() {
       done: END,
     });
 
-  return workflow.compile({ checkpointer });
+  return workflow.compile({ checkpointer: getCheckpointer() });
 }

@@ -217,6 +217,13 @@ export async function resumeResearch(
   let latestState: Record<string, unknown> = {};
 
   try {
+    // Read the checkpointed state to get originalQuery, language, etc.
+    // that were set before the interrupt.
+    const checkpoint = await graph.getState({ configurable: { thread_id: threadId } });
+    if (checkpoint?.values) {
+      latestState = { ...(checkpoint.values as Record<string, unknown>) };
+    }
+
     const stream = await graph.stream(new Command({ resume: userInput }), {
       streamMode: "updates",
       configurable: { thread_id: threadId },
@@ -229,13 +236,17 @@ export async function resumeResearch(
       }
 
       for (const [nodeName, update] of Object.entries(event)) {
+        if (nodeName.startsWith("__")) continue;
         const stateUpdate = update as Record<string, unknown>;
         latestState = { ...latestState, ...stateUpdate };
         processNodeUpdate(nodeName, stateUpdate, latestState, callbacks);
       }
     }
 
-    emitComplete(latestState, "", "", callbacks);
+    // Use the query/language from checkpoint state (not empty strings)
+    const query = (latestState.originalQuery as string) ?? "";
+    const language = (latestState.language as string) ?? "en";
+    emitComplete(latestState, query, language, callbacks);
   } catch (err) {
     callbacks.onEvent("error", {
       message: err instanceof Error ? err.message : String(err),
