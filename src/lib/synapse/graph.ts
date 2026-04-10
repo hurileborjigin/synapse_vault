@@ -1,9 +1,9 @@
 /**
  * LangGraph workflow definition — wires all nodes with conditional edges.
- * Port of Python's graph.py
+ * Includes MemorySaver checkpointer for human-in-the-loop interrupt/resume.
  */
 
-import { END, StateGraph } from "@langchain/langgraph";
+import { END, MemorySaver, StateGraph } from "@langchain/langgraph";
 import { getSettings } from "./config";
 import { ResearchState, type ResearchStateType } from "./state";
 
@@ -13,6 +13,12 @@ import { ranker } from "./nodes/ranker";
 import { knowledgeGraph } from "./nodes/knowledge-graph";
 import { synthesizer } from "./nodes/synthesizer";
 import { qualityGate } from "./nodes/quality-gate";
+
+// ---------------------------------------------------------------------------
+// Checkpointer (in-memory, persists for process lifetime)
+// ---------------------------------------------------------------------------
+
+const checkpointer = new MemorySaver();
 
 // ---------------------------------------------------------------------------
 // Conditional edge functions
@@ -73,5 +79,5 @@ export function buildGraph() {
       done: END,
     });
 
-  return workflow.compile();
+  return workflow.compile({ checkpointer });
 }

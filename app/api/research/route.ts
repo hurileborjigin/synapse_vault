@@ -1,6 +1,6 @@
 /**
  * POST /api/research — SSE streaming research pipeline.
- * Replaces Python's POST /api/research endpoint.
+ * May pause for human-in-the-loop approval (emits approval_needed event).
  */
 
 import { NextRequest } from "next/server";
@@ -27,15 +27,19 @@ export async function POST(req: NextRequest) {
   }
 
   return createSSEStream(async (enqueue) => {
-    const latestState = await runResearch(query, language, {
-      onEvent: (event, data) => enqueue(event, data),
-    });
+    const { latestState, interrupted } = await runResearch(
+      query,
+      language,
+      { onEvent: (event, data) => enqueue(event, data) }
+    );
 
-    // Persist result as Markdown
-    try {
-      await saveResult(latestState);
-    } catch {
-      // Non-fatal: don't break the SSE stream for persistence failures
+    // Only persist result if pipeline completed (not interrupted)
+    if (!interrupted) {
+      try {
+        await saveResult(latestState);
+      } catch {
+        // Non-fatal: don't break the SSE stream for persistence failures
+      }
     }
   });
 }

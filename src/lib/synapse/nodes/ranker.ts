@@ -1,11 +1,9 @@
 /**
  * Ranker — LLM-based relevance ranking of search results.
- * Port of Python's nodes/ranker.py
  *
- * Unlike the Python version which mutates dataclasses in-place,
- * this version returns the full scored results list as a state update.
- * The graph reads from searchResults (accumulated) and writes scores
- * back by updating each result's relevanceScore.
+ * Returns the full scored results list. The state.ts searchResults reducer
+ * detects ranking updates (all items have relevanceScore > 0 with overlapping URLs)
+ * and replaces instead of appending.
  */
 
 import { getLLM } from "../config";
@@ -47,15 +45,15 @@ export async function ranker(
   if (allResults.length === 0) return {};
 
   // Only rank results that haven't been scored yet
-  const unranked = allResults.filter((r) => r.relevanceScore === 0);
-  if (unranked.length === 0) return {};
+  const hasUnranked = allResults.some((r) => r.relevanceScore === 0);
+  if (!hasUnranked) return {};
 
   const llm = await getLLM("searcher");
 
-  // Clone all results so we can set scores without mutation
+  // Clone all results so we can set scores
   const scored: SearchResult[] = allResults.map((r) => ({ ...r }));
 
-  // Create a map from (url+sourceQuery) to index in scored for unranked items
+  // Find indices of unranked items
   const unrankedIndices: number[] = [];
   for (let i = 0; i < scored.length; i++) {
     if (scored[i].relevanceScore === 0) {
@@ -111,17 +109,11 @@ export async function ranker(
 
   await Promise.all(batchPromises);
 
-  // Since searchResults uses an accumulate reducer, we can't replace the list.
-  // Instead, we return an empty searchResults (adds nothing) but the mutation
-  // has already happened on the accumulated state.
-  //
-  // WORKAROUND: We actually need to return something useful. The frontend
-  // expects ranked results. We'll store the full scored+sorted list.
-  // Note: The searchResults reducer is additive, so returning scored would
-  // duplicate. Instead, we signal completion through the SSE event in the runner.
-  //
-  // The ranker's side effect is that it mutates the accumulated searchResults
-  // in the state. Since LangGraph.js state is cloned per node, we need to
-  // work around this. For now, we return empty searchResults (no new results).
-  return { searchResults: [] };
+  // Sort by relevance descending
+  scored.sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+  // Return the full scored list — the smart reducer in state.ts detects this
+  // as a ranking update (all items have scores > 0, URLs overlap with current)
+  // and replaces instead of appending.
+  return { searchResults: scored };
 }

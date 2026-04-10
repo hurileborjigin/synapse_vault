@@ -18,7 +18,16 @@ export async function cascadingSearch(
   query: string,
   numResults = 5
 ): Promise<SearchResult[]> {
-  const providers = [jinaSearch, braveSearch, tavilySearch];
+  const settings = getSettings();
+
+  // Only try providers that have API keys configured — skip others instantly
+  const providers: Array<(q: string, n: number) => Promise<SearchResult[]>> = [];
+  if (settings.jinaApiKey) providers.push(jinaSearch);
+  if (settings.braveApiKey) providers.push(braveSearch);
+  if (settings.tavilyApiKey) providers.push(tavilySearch);
+
+  // If no providers configured, return empty
+  if (providers.length === 0) return [];
 
   for (const provider of providers) {
     try {

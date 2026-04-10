@@ -153,6 +153,31 @@ export function getModelName(node: NodeName): string {
 }
 
 // ---------------------------------------------------------------------------
+// Model context window lookup
+// ---------------------------------------------------------------------------
+
+export function getModelContextWindow(settings?: Settings): number {
+  const s = settings ?? getSettings();
+  const model = s.llmModel.toLowerCase();
+
+  if (model.includes("claude-sonnet-4") || model.includes("claude-3-5-sonnet"))
+    return 200_000;
+  if (model.includes("claude-opus-4") || model.includes("claude-3-opus"))
+    return 200_000;
+  if (model.includes("claude-3-haiku") || model.includes("claude-haiku"))
+    return 200_000;
+  if (model.includes("gpt-4o")) return 128_000;
+  if (model.includes("gpt-4-turbo")) return 128_000;
+  if (model.includes("gpt-5")) return 128_000;
+  if (model.includes("gpt-4-32k")) return 32_000;
+  if (model.includes("gpt-4")) return 8_192;
+  if (model.includes("gpt-3.5")) return 16_385;
+
+  // Default conservative estimate
+  return 100_000;
+}
+
+// ---------------------------------------------------------------------------
 // LLM factory
 // ---------------------------------------------------------------------------
 

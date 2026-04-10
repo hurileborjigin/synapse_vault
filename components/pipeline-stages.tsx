@@ -7,11 +7,13 @@ import {
   CheckCircle,
   Network,
   BarChart3,
+  UserCheck,
 } from "lucide-react";
 
 export type PipelineStage =
   | "idle"
   | "analyzing"
+  | "awaiting_approval"
   | "searching"
   | "ranking"
   | "knowledge_graph"
@@ -27,6 +29,7 @@ interface PipelineStagesProps {
 
 const stages = [
   { id: "analyzing", label: "Query Analysis", icon: Brain },
+  { id: "awaiting_approval", label: "Topic Review", icon: UserCheck },
   { id: "searching", label: "Web Search", icon: Search },
   { id: "ranking", label: "Relevance Ranking", icon: BarChart3 },
   { id: "knowledge_graph", label: "Knowledge Graph", icon: Network },
@@ -96,7 +99,7 @@ export function PipelineStages({
                   </span>
                   {status === "active" && (
                     <span className="text-xs text-primary animate-pulse">
-                      Processing...
+                      {stage.id === "awaiting_approval" ? "Awaiting input..." : "Processing..."}
                     </span>
                   )}
                   {status === "complete" && (

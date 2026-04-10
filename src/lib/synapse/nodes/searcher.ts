@@ -1,6 +1,6 @@
 /**
  * Searcher — cascading web search across multiple providers.
- * Port of Python's nodes/searcher.py
+ * Uses KG-guided queries when available for more targeted searching.
  */
 
 import type { ResearchStateType } from "../state";
@@ -14,16 +14,25 @@ export async function searcher(
   // Collect all search queries
   const allQueries: string[] = [];
 
-  // From sub-questions that haven't been answered yet
-  for (const sq of state.subQuestions ?? []) {
-    if (!sq.answered) {
-      allQueries.push(...sq.searchQueries);
+  // Priority 1: KG-guided queries (more targeted than raw gaps)
+  if ((state.kgGuidedQueries ?? []).length > 0) {
+    allQueries.push(...state.kgGuidedQueries!);
+  }
+
+  // Priority 2: Knowledge gaps (iterations > 0, fallback if no guided queries)
+  if (allQueries.length === 0) {
+    for (const gap of state.knowledgeGaps ?? []) {
+      allQueries.push(gap);
     }
   }
 
-  // From knowledge gaps (iterations > 0)
-  for (const gap of state.knowledgeGaps ?? []) {
-    allQueries.push(gap);
+  // Priority 3: Sub-questions that haven't been answered yet
+  if (allQueries.length === 0) {
+    for (const sq of state.subQuestions ?? []) {
+      if (!sq.answered) {
+        allQueries.push(...sq.searchQueries);
+      }
+    }
   }
 
   // Fallback to original query

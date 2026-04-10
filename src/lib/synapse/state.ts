@@ -40,9 +40,17 @@ export const ResearchState = Annotation.Root({
     default: () => 0,
   }),
 
-  // Search results accumulate across iterations
+  // Search results: smart reducer that appends new results or replaces on ranking update
   searchResults: Annotation<SearchResult[]>({
-    reducer: (current, update) => [...current, ...update],
+    reducer: (current, update) => {
+      if (update.length === 0) return current;
+      // Detect ranking update: all items have scores > 0 and overlap with current URLs
+      const updateUrls = new Set(update.map((r) => r.url));
+      const isRankingUpdate =
+        update.every((r) => r.relevanceScore > 0) &&
+        current.some((r) => updateUrls.has(r.url));
+      return isRankingUpdate ? update : [...current, ...update];
+    },
     default: () => [],
   }),
 
@@ -62,6 +70,20 @@ export const ResearchState = Annotation.Root({
     default: () => [],
   }),
   knowledgeGaps: Annotation<string[]>({
+    reducer: (_, update) => update,
+    default: () => [],
+  }),
+
+  // KG grounding context for synthesizer
+  kgContext: Annotation<string>({
+    reducer: (_, update) => update,
+    default: () => "",
+  }),
+  entityCoverage: Annotation<Record<string, number>>({
+    reducer: (_, update) => update,
+    default: () => ({}),
+  }),
+  kgGuidedQueries: Annotation<string[]>({
     reducer: (_, update) => update,
     default: () => [],
   }),
@@ -92,6 +114,31 @@ export const ResearchState = Annotation.Root({
   revisionCount: Annotation<number>({
     reducer: (_, update) => update,
     default: () => 0,
+  }),
+
+  // Token usage tracking per node
+  tokenUsage: Annotation<Record<string, number>>({
+    reducer: (current, update) => ({ ...current, ...update }),
+    default: () => ({}),
+  }),
+
+  // Human-in-the-loop
+  threadId: Annotation<string>({
+    reducer: (_, update) => update,
+    default: () => "",
+  }),
+  lightSearchResults: Annotation<
+    Array<{
+      query: string;
+      topResults: Array<{ title: string; snippet: string; url: string }>;
+    }>
+  >({
+    reducer: (_, update) => update,
+    default: () => [],
+  }),
+  topicsApproved: Annotation<boolean>({
+    reducer: (_, update) => update,
+    default: () => false,
   }),
 });
 

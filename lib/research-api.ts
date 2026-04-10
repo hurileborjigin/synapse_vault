@@ -14,6 +14,21 @@ const API_BASE = "/api";
 // SSE stream callbacks
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Topic proposal for human-in-the-loop
+// ---------------------------------------------------------------------------
+
+export interface TopicProposal {
+  threadId: string;
+  subQuestions: SubQuestion[];
+  lightSearchResults: Array<{
+    query: string;
+    topResults: Array<{ title: string; snippet: string; url: string }>;
+  }>;
+  domain: string;
+  language: string;
+}
+
 export interface StreamCallbacks {
   onStageChange?: (stage: string, status: string) => void;
   onSubQuestions?: (subQuestions: SubQuestion[]) => void;
@@ -24,6 +39,7 @@ export interface StreamCallbacks {
   onQuality?: (scores: QualityScores, passed: boolean, revisionCount: number) => void;
   onComplete?: (result?: ResearchResult) => void;
   onError?: (message: string) => void;
+  onApprovalNeeded?: (proposal: TopicProposal) => void;
 }
 
 function isAbortError(err: unknown): boolean {
@@ -174,6 +190,80 @@ function dispatchEvent(event: string, data: Record<string, unknown>, cb: StreamC
     case "error":
       cb.onError?.(data.message as string);
       break;
+    case "approval_needed":
+      cb.onApprovalNeeded?.(data as unknown as TopicProposal);
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resume research after human-in-the-loop approval
+// ---------------------------------------------------------------------------
+
+export async function resumeResearch(
+  threadId: string,
+  approval: { subQuestions: SubQuestion[] },
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/research/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId, approval }),
+      signal,
+    });
+  } catch (err) {
+    if (isAbortError(err)) return;
+    callbacks.onError?.(err instanceof Error ? err.message : String(err));
+    return;
+  }
+
+  if (!res.ok) {
+    let text = "";
+    try { text = await res.text(); } catch { /* aborted */ }
+    callbacks.onError?.(text || `HTTP ${res.status}`);
+    return;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) {
+    callbacks.onError?.("No response body");
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let currentEvent = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (line.startsWith("event:")) {
+          currentEvent = line.slice(6).trim();
+        } else if (line.startsWith("data:") && currentEvent) {
+          const raw = line.slice(5).trim();
+          try {
+            const data = JSON.parse(raw);
+            dispatchEvent(currentEvent, data, callbacks);
+          } catch {
+            // skip malformed JSON
+          }
+          currentEvent = "";
+        }
+      }
+    }
+  } catch (err) {
+    if (isAbortError(err)) return;
+    callbacks.onError?.(err instanceof Error ? err.message : String(err));
   }
 }
 

@@ -24,6 +24,8 @@ export interface KGEntity {
   name: string;
   entityType: string;
   description: string;
+  sourceUrls?: string[];     // which search results mention this entity
+  coverageScore?: number;    // 0-1 how well covered by sources
 }
 
 export interface KGRelation {
@@ -57,4 +59,23 @@ export type SSEEventType =
   | "synthesis"
   | "quality"
   | "complete"
-  | "error";
+  | "error"
+  | "approval_needed";
+
+/** Payload for the approval_needed SSE event */
+export interface TopicProposal {
+  threadId: string;
+  subQuestions: SubQuestion[];
+  lightSearchResults: Array<{
+    query: string;
+    topResults: Array<{ title: string; snippet: string; url: string }>;
+  }>;
+  domain: string;
+  language: string;
+}
+
+/** Payload the user sends back to resume after approval */
+export interface TopicApproval {
+  threadId: string;
+  subQuestions: SubQuestion[];
+}

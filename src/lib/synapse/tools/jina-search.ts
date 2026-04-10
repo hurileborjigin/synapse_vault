@@ -13,6 +13,7 @@ export async function jinaSearch(
   const { jinaApiKey } = getSettings();
   if (!jinaApiKey) return [];
 
+  console.log(`[jinaSearch] searching: "${query.slice(0, 60)}..."`);
   try {
     const resp = await fetch(`https://s.jina.ai/${encodeURIComponent(query)}`, {
       headers: {

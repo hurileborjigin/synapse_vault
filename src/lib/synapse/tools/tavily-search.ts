@@ -14,6 +14,7 @@ export async function tavilySearch(
   const { tavilyApiKey } = getSettings();
   if (!tavilyApiKey) return [];
 
+  console.log(`[tavilySearch] searching: "${query.slice(0, 60)}..."`);
   try {
     const resp = await fetch("https://api.tavily.com/search", {
       method: "POST",

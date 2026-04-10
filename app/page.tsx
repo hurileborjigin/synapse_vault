@@ -13,13 +13,14 @@ import { QueryInput } from "@/components/query-input";
 import { ResearchHeader } from "@/components/research-header";
 import { SettingsModal } from "@/components/settings-modal";
 import { SessionHistoryPanel } from "@/components/session-history-panel";
-import { startResearch } from "@/lib/research-api";
+import { startResearch, resumeResearch, type TopicProposal } from "@/lib/research-api";
 import { getSessions, saveSession, deleteSession, clearSessions, type SavedSession } from "@/lib/session-history";
-import type { Citation, ResearchResult } from "@/lib/sample-data";
+import type { Citation, ResearchResult, SubQuestion } from "@/lib/sample-data";
+import { TopicApprovalPanel } from "@/components/topic-approval-panel";
 
 type ViewTab = "article" | "knowledge" | "sources";
 
-const stageOrder = ["analyzing", "searching", "ranking", "knowledge_graph", "synthesizing", "quality_check", "complete"];
+const stageOrder = ["analyzing", "awaiting_approval", "searching", "ranking", "knowledge_graph", "synthesizing", "quality_check", "complete"];
 
 function stageIsActive(stage: string, currentStage: PipelineStage) {
   return stage === currentStage;
@@ -64,7 +65,7 @@ function IntermediateSection({
           {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
         </span>
       </button>
-      {open && ready && (
+      {open && (ready || active) && (
         <div className="space-y-2 px-4 pb-4">
           {children}
         </div>
@@ -83,6 +84,10 @@ export default function HomePage() {
   const [centerView, setCenterView] = useState<"article" | "knowledge">("article");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Human-in-the-loop state
+  const [pendingApproval, setPendingApproval] = useState<TopicProposal | null>(null);
+  const [threadId, setThreadId] = useState<string | null>(null);
 
   // Collapsible sidebars
   const [leftCollapsed, setLeftCollapsed] = useState(false);
@@ -122,8 +127,87 @@ export default function HomePage() {
     abortRef.current?.abort();
     abortRef.current = null;
     setIsLoading(false);
+    setPendingApproval(null);
+    setThreadId(null);
     setCurrentStage("idle");
   }, []);
+
+  // Handle topic approval from TopicApprovalPanel
+  const handleTopicApproval = useCallback(async (approvedQuestions: SubQuestion[]) => {
+    if (!threadId) return;
+
+    setPendingApproval(null);
+    setCurrentStage("searching" as PipelineStage);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    let searchIterations = 0;
+    let revisionCount = 0;
+
+    await resumeResearch(threadId, { subQuestions: approvedQuestions }, {
+      onStageChange: (stage) => {
+        console.log(`[PAGE] resume stageChange → ${stage}`);
+        setCurrentStage(stage as PipelineStage);
+      },
+      onSubQuestions: (subQuestions) => {
+        setPartialResult((prev) => ({ ...prev, subQuestions }));
+      },
+      onSearchResults: (searchResults, iteration) => {
+        searchIterations = iteration;
+        setPartialResult((prev) => ({
+          ...prev,
+          searchResults: [...(prev.searchResults ?? []), ...searchResults],
+          searchIterations: iteration,
+        }));
+      },
+      onRanking: (searchResults) => {
+        setPartialResult((prev) => ({ ...prev, searchResults }));
+      },
+      onKnowledgeGraph: (kgEntities, kgRelations) => {
+        setPartialResult((prev) => ({ ...prev, kgEntities, kgRelations }));
+      },
+      onSynthesis: (article, citations) => {
+        setPartialResult((prev) => ({ ...prev, article, citations }));
+      },
+      onQuality: (qualityScores, _passed, revisions) => {
+        revisionCount = revisions;
+        setPartialResult((prev) => ({ ...prev, qualityScores }));
+      },
+      onComplete: (completedResult) => {
+        setPartialResult((prev) => {
+          const final: ResearchResult = completedResult ?? {
+            query: prev.query ?? "",
+            language: prev.language ?? "en",
+            subQuestions: prev.subQuestions ?? [],
+            searchResults: prev.searchResults ?? [],
+            kgEntities: prev.kgEntities ?? [],
+            kgRelations: prev.kgRelations ?? [],
+            article: prev.article ?? "",
+            citations: prev.citations ?? [],
+            qualityScores: prev.qualityScores ?? {
+              comprehensiveness: 0, insight: 0, instruction_following: 0, readability: 0,
+            },
+            searchIterations,
+            revisions: revisionCount,
+          };
+          setResult(final);
+          saveSession(final);
+          void refreshSessions();
+          return prev;
+        });
+        setIsLoading(false);
+        setThreadId(null);
+      },
+      onError: (message) => {
+        console.error("[PAGE] resume error:", message);
+        setIsLoading(false);
+        setThreadId(null);
+      },
+    }, controller.signal).catch((err) => {
+      console.error("[PAGE] resumeResearch threw:", err);
+    });
+  }, [threadId, refreshSessions]);
 
   const handleResearch = useCallback(async (query: string) => {
     // Cancel any in-flight request
@@ -204,6 +288,14 @@ export default function HomePage() {
       onError: (message) => {
         console.error("[PAGE] error:", message);
         setIsLoading(false);
+      },
+      onApprovalNeeded: (proposal) => {
+        console.log("[PAGE] approvalNeeded:", proposal.subQuestions.length, "topics");
+        setThreadId(proposal.threadId);
+        setPendingApproval(proposal);
+        // Also set sub-questions in partialResult so the section renders
+        setPartialResult((prev) => ({ ...prev, subQuestions: proposal.subQuestions }));
+        setCurrentStage("awaiting_approval" as PipelineStage);
       },
     }, controller.signal).catch((err) => {
       console.error("[PAGE] startResearch threw:", err);
@@ -431,23 +523,34 @@ export default function HomePage() {
                     </button>
                   </div>
 
-                  <IntermediateSection title="Query Analysis" stage="analyzing" currentStage={currentStage}
-                    ready={!!partialResult.subQuestions?.length}>
-                    {partialResult.subQuestions?.map((q, i) => (
-                      <div key={i} className="flex items-start gap-2 rounded-lg border border-border bg-card/50 p-3">
-                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
-                          {q.priority}
-                        </span>
-                        <div>
-                          <p className="text-sm text-foreground">{q.question}</p>
-                          {q.searchQueries.length > 0 && (
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              Queries: {q.searchQueries.join(", ")}
-                            </p>
-                          )}
+                  <IntermediateSection title="Query Analysis" stage="analyzing" currentStage={
+                    /* Treat awaiting_approval as still in analyzing stage for this section */
+                    currentStage === "awaiting_approval" ? ("analyzing" as PipelineStage) : currentStage
+                  }
+                    ready={!!partialResult.subQuestions?.length || !!pendingApproval}>
+                    {pendingApproval ? (
+                      <TopicApprovalPanel
+                        proposal={pendingApproval}
+                        onApprove={handleTopicApproval}
+                        onCancel={handleCancel}
+                      />
+                    ) : (
+                      partialResult.subQuestions?.map((q, i) => (
+                        <div key={i} className="flex items-start gap-2 rounded-lg border border-border bg-card/50 p-3">
+                          <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
+                            {q.priority}
+                          </span>
+                          <div>
+                            <p className="text-sm text-foreground">{q.question}</p>
+                            {q.searchQueries.length > 0 && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                Queries: {q.searchQueries.join(", ")}
+                              </p>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </IntermediateSection>
 
                   <IntermediateSection title="Search Results" stage="searching" currentStage={currentStage}
