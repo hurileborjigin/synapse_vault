@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Loader2, Eye, EyeOff, ChevronDown, ChevronRight } from "lucide-react";
+import { X, Loader2, Eye, EyeOff, ChevronDown, ChevronRight, Circle } from "lucide-react";
 import { getSettings, updateSettings, type AgentSettings } from "@/lib/research-api";
 
 interface SettingsModalProps {
@@ -33,17 +33,33 @@ function SectionHeader({ title, open, onToggle }: { title: string; open: boolean
   );
 }
 
+function StatusDot({ active }: { active: boolean }) {
+  return (
+    <Circle
+      className={`h-2 w-2 ${active ? "fill-emerald-400 text-emerald-400" : "fill-muted-foreground/30 text-muted-foreground/30"}`}
+    />
+  );
+}
+
 function KeyInput({
-  label, value, onChange,
+  label, value, onChange, configured,
 }: {
-  label: string; value: string; onChange: (v: string) => void;
+  label: string; value: string; onChange: (v: string) => void; configured?: boolean;
 }) {
   const [visible, setVisible] = useState(false);
   const hasValue = value && !value.split("").every((c) => c === "*");
   const isMasked = value.includes("*");
   return (
     <div>
-      <label className="block text-xs font-medium text-muted-foreground mb-1">{label}</label>
+      <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-1">
+        {configured !== undefined && <StatusDot active={configured} />}
+        {label}
+        {configured !== undefined && (
+          <span className={`text-[10px] ${configured ? "text-emerald-400" : "text-muted-foreground/50"}`}>
+            {configured ? "configured" : "not set"}
+          </span>
+        )}
+      </label>
       <div className="relative">
         <input
           type={visible ? "text" : "password"}
@@ -72,7 +88,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sectionsOpen, setSectionsOpen] = useState({ provider: true, search: false, workflow: false });
+  const [sectionsOpen, setSectionsOpen] = useState({ provider: true, search: true, workflow: false });
   useEffect(() => {
     if (open) {
       setLoading(true);
@@ -110,6 +126,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     "w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
 
   const providerKeyField = form ? PROVIDER_KEY_MAP[form.llmProvider] : null;
+  const searchStatus = form?.searchApiStatus;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-xl max-h-[85vh] overflow-y-auto">
@@ -125,8 +143,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <Loader2 className="h-6 w-6 animate-spin text-primary" />
           </div>
         ) : error ? (
-          <div className="rounded-md bg-destructive/10 p-4 text-sm text-destructive">
-            {error}. Make sure the API server is running on port 8000.
+          <div className="rounded-md bg-destructive/10 p-4 text-sm text-destructive space-y-2">
+            <p>{error}</p>
+            <p className="text-xs text-muted-foreground">
+              Start the dev server with: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">npm run dev</code>
+            </p>
           </div>
         ) : form ? (
           <div className="space-y-5">
@@ -214,9 +235,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               <SectionHeader title="Search API Keys" open={sectionsOpen.search} onToggle={() => toggleSection("search")} />
               {sectionsOpen.search && (
                 <div className="space-y-3 pl-5">
-                  <KeyInput label="Jina API Key" value={form.jinaApiKey} onChange={(v) => set("jinaApiKey", v)} />
-                  <KeyInput label="Brave API Key" value={form.braveApiKey} onChange={(v) => set("braveApiKey", v)} />
-                  <KeyInput label="Tavily API Key" value={form.tavilyApiKey} onChange={(v) => set("tavilyApiKey", v)} />
+                  <KeyInput
+                    label="Jina API Key"
+                    value={form.jinaApiKey}
+                    onChange={(v) => set("jinaApiKey", v)}
+                    configured={searchStatus?.jina}
+                  />
+                  <KeyInput
+                    label="Brave API Key"
+                    value={form.braveApiKey}
+                    onChange={(v) => set("braveApiKey", v)}
+                    configured={searchStatus?.brave}
+                  />
+                  <KeyInput
+                    label="Tavily API Key"
+                    value={form.tavilyApiKey}
+                    onChange={(v) => set("tavilyApiKey", v)}
+                    configured={searchStatus?.tavily}
+                  />
                 </div>
               )}
             </div>

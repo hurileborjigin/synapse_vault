@@ -1,0 +1,185 @@
+/**
+ * Synthesizer — generate research article with inline citations.
+ * Port of Python's nodes/synthesizer.py
+ */
+
+import { getLLM, getSettings } from "../config";
+import type { ResearchStateType } from "../state";
+import type { Citation } from "../types";
+import { CitationManager } from "../utils/citations";
+import { withTimeout } from "../utils/timeout";
+
+const SYSTEM_PROMPT_EN = `You are an expert research writer producing a comprehensive, PhD-level research article.
+
+REQUIREMENTS:
+1. Write a well-structured article with clear sections (use ## headings)
+2. Cover ALL sub-questions thoroughly with deep analysis
+3. Use inline citations in [N] format, where N is the reference number
+4. EVERY factual claim must have a citation. Aim for 20-40 unique citations.
+5. Include a "## References" section at the end with numbered references
+6. Each reference must be formatted as: [N] Title. URL
+7. ONLY use URLs from the provided source list — do NOT invent URLs
+8. Provide multiple perspectives, data points, and expert opinions
+9. Include analysis, not just facts — explain implications and connections
+10. Write 3000-6000 words for comprehensive coverage
+
+STRUCTURE:
+- Introduction (context, scope, significance)
+- Multiple body sections addressing each sub-question
+- Analysis/Discussion section connecting findings
+- Conclusion with key takeaways
+- References
+
+CITATION RULES:
+- Use [N] inline immediately after the claim it supports
+- Multiple citations for well-supported claims: [1][2]
+- Every section should have multiple citations
+- Reference list at end: [N] Title. URL`;
+
+const SYSTEM_PROMPT_ZH = `你是一位专业的研究报告撰写者，负责撰写全面、博士级别的研究文章。
+
+要求：
+1. 撰写结构清晰的文章，使用 ## 标题分节
+2. 深入全面地覆盖所有子问题
+3. 使用 [N] 格式的内联引用，N 为参考文献编号
+4. 每个事实性陈述都必须有引用。目标：20-40个独立引用
+5. 在文末包含"## 参考文献"部分，列出编号参考文献
+6. 每条参考文献格式：[N] 标题. URL
+7. 只使用提供的来源列表中的URL——不要编造URL
+8. 提供多角度分析、数据支持和专家观点
+9. 不仅陈述事实，还要分析其含义和关联
+10. 撰写3000-6000字以确保全面覆盖
+
+结构：
+- 引言（背景、范围、重要性）
+- 多个正文部分，分别回答各子问题
+- 分析/讨论部分，连接各项发现
+- 结论与关键要点
+- 参考文献
+
+引用规则：
+- 在支持的陈述后立即使用 [N]
+- 充分支持的论点可使用多个引用：[1][2]
+- 每个部分都应有多个引用
+- 文末参考文献列表：[N] 标题. URL`;
+
+const REVISION_PROMPT = `Revise the article based on this feedback:
+
+{feedback}
+
+Maintain all existing citations and add new ones where needed. Keep the [N] citation format and the References section.`;
+
+export async function synthesizer(
+  state: ResearchStateType
+): Promise<Partial<ResearchStateType>> {
+  const llm = await getLLM("synthesizer");
+  const settings = getSettings();
+  const searchResults = state.searchResults ?? [];
+  const threshold = settings.relevanceThreshold;
+
+  // Build citation manager from search results
+  const cm = new CitationManager(searchResults);
+
+  // Select system prompt based on language
+  const sysPrompt =
+    state.language === "zh" ? SYSTEM_PROMPT_ZH : SYSTEM_PROMPT_EN;
+
+  // Build source material — sorted by relevance
+  let relevant = searchResults
+    .filter((r) => r.relevanceScore >= threshold)
+    .sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+  if (relevant.length < 10) {
+    relevant = [...searchResults]
+      .sort((a, b) => b.relevanceScore - a.relevanceScore)
+      .slice(0, 30);
+  }
+
+  const sourceBlocks = relevant.slice(0, 40).map((r, i) => {
+    const contentPreview = r.content?.slice(0, 2000) || r.snippet;
+    return `[Source ${i + 1}]\nURL: ${r.url}\nTitle: ${r.title}\nContent: ${contentPreview}`;
+  });
+  const sourcesText = sourceBlocks.join("\n\n---\n\n");
+
+  // Sub-questions context
+  const subQText = (state.subQuestions ?? [])
+    .map((sq) => `- ${sq.question}`)
+    .join("\n");
+
+  // KG context
+  let kgContext = "";
+  if (state.kgEntities?.length) {
+    kgContext +=
+      "\nKey entities identified:\n" +
+      state.kgEntities
+        .slice(0, 20)
+        .map((e) => `- ${e.name} (${e.entityType}): ${e.description}`)
+        .join("\n");
+  }
+  if (state.kgRelations?.length) {
+    kgContext +=
+      "\nKey relationships:\n" +
+      state.kgRelations
+        .slice(0, 15)
+        .map((r) => `- ${r.source} → ${r.relation} → ${r.target}`)
+        .join("\n");
+  }
+
+  let messages: Array<{ role: string; content: string }>;
+
+  if (state.articleDraft && state.qualityFeedback) {
+    // Revision mode
+    const userPrompt = [
+      `Original query: ${state.originalQuery}`,
+      `\nCurrent draft:\n${state.articleDraft}`,
+      `\nFeedback for revision:\n${state.qualityFeedback}`,
+      `\nAvailable sources:\n${sourcesText}`,
+    ].join("\n");
+
+    const revisionNote = REVISION_PROMPT.replace(
+      "{feedback}",
+      state.qualityFeedback
+    );
+
+    messages = [
+      { role: "system", content: sysPrompt + "\n\n" + revisionNote },
+      { role: "user", content: userPrompt },
+    ];
+  } else {
+    // Initial generation
+    const userPrompt = [
+      `Research query: ${state.originalQuery}`,
+      `\nSub-questions to address:\n${subQText}`,
+      kgContext,
+      `\nAvailable sources (use these URLs for citations):\n${sourcesText}`,
+    ].join("\n");
+
+    messages = [
+      { role: "system", content: sysPrompt },
+      { role: "user", content: userPrompt },
+    ];
+  }
+
+  const response = await withTimeout(
+    llm.invoke(messages),
+    300_000, // 5-minute timeout
+    "Article synthesis"
+  );
+
+  const article =
+    typeof response.content === "string"
+      ? response.content
+      : JSON.stringify(response.content);
+
+  // Build citation objects from the sources used
+  const citations: Citation[] = [];
+  for (const r of relevant.slice(0, 40)) {
+    const c = cm.getOrCreate(r.url);
+    if (c) citations.push(c);
+  }
+
+  return {
+    articleDraft: article,
+    citations,
+  };
+}

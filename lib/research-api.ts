@@ -11,27 +11,6 @@ import type {
 const API_BASE = "/api";
 
 // ---------------------------------------------------------------------------
-// Snake → camelCase conversion
-// ---------------------------------------------------------------------------
-
-function snakeToCamel(s: string): string {
-  return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-}
-
-function convertKeys<T>(obj: unknown): T {
-  if (Array.isArray(obj)) return obj.map((v) => convertKeys(v)) as T;
-  if (obj !== null && typeof obj === "object") {
-    return Object.fromEntries(
-      Object.entries(obj as Record<string, unknown>).map(([k, v]) => [
-        snakeToCamel(k),
-        convertKeys(v),
-      ])
-    ) as T;
-  }
-  return obj as T;
-}
-
-// ---------------------------------------------------------------------------
 // SSE stream callbacks
 // ---------------------------------------------------------------------------
 
@@ -126,7 +105,7 @@ function dispatchEvent(event: string, data: Record<string, unknown>, cb: StreamC
     : event === "complete"
     ? { hasResult: !!data.result, articleLen: ((data.result as Record<string,unknown>)?.article as string)?.length ?? 0 }
     : event === "quality"
-    ? { scores: data.quality_scores, passed: data.quality_passed, revision: data.revision_count }
+    ? { scores: data.qualityScores, passed: data.qualityPassed, revision: data.revisionCount }
     : event === "stage"
     ? { stage: data.stage, status: data.status }
     : event === "error"
@@ -138,34 +117,33 @@ function dispatchEvent(event: string, data: Record<string, unknown>, cb: StreamC
       cb.onStageChange?.(data.stage as string, data.status as string);
       break;
     case "sub_questions":
-      cb.onSubQuestions?.(convertKeys<SubQuestion[]>(data.sub_questions));
+      cb.onSubQuestions?.(data.subQuestions as SubQuestion[]);
       break;
     case "search_results":
       cb.onSearchResults?.(
-        convertKeys<SearchResult[]>(data.search_results),
-        data.search_iteration as number
+        data.searchResults as SearchResult[],
+        data.searchIteration as number
       );
       break;
     case "ranking":
-      cb.onRanking?.(convertKeys<SearchResult[]>(data.search_results));
+      cb.onRanking?.(data.searchResults as SearchResult[]);
       break;
     case "knowledge_graph":
       cb.onKnowledgeGraph?.(
-        convertKeys<KGEntity[]>(data.kg_entities),
-        convertKeys<KGRelation[]>(data.kg_relations),
-        (data.knowledge_gaps as string[]) ?? []
+        data.kgEntities as KGEntity[],
+        data.kgRelations as KGRelation[],
+        (data.knowledgeGaps as string[]) ?? []
       );
       break;
     case "synthesis":
       cb.onSynthesis?.(
         data.article as string,
-        convertKeys<Citation[]>(data.citations)
+        data.citations as Citation[]
       );
       break;
     case "quality": {
-      // Don't convert quality_scores keys — component expects snake_case (instruction_following)
-      const scores = data.quality_scores as QualityScores;
-      cb.onQuality?.(scores, data.quality_passed as boolean, data.revision_count as number);
+      const scores = data.qualityScores as QualityScores;
+      cb.onQuality?.(scores, data.qualityPassed as boolean, data.revisionCount as number);
       break;
     }
     case "complete": {
@@ -174,19 +152,19 @@ function dispatchEvent(event: string, data: Record<string, unknown>, cb: StreamC
         ? ({
             query: rawResult.query as string,
             language: rawResult.language as string,
-            subQuestions: convertKeys<SubQuestion[]>((rawResult.sub_questions ?? []) as SubQuestion[]),
-            searchResults: convertKeys<SearchResult[]>((rawResult.search_results ?? []) as SearchResult[]),
-            kgEntities: convertKeys<KGEntity[]>((rawResult.kg_entities ?? []) as KGEntity[]),
-            kgRelations: convertKeys<KGRelation[]>((rawResult.kg_relations ?? []) as KGRelation[]),
+            subQuestions: (rawResult.subQuestions ?? []) as SubQuestion[],
+            searchResults: (rawResult.searchResults ?? []) as SearchResult[],
+            kgEntities: (rawResult.kgEntities ?? []) as KGEntity[],
+            kgRelations: (rawResult.kgRelations ?? []) as KGRelation[],
             article: (rawResult.article as string) ?? "",
-            citations: convertKeys<Citation[]>((rawResult.citations ?? []) as Citation[]),
-            qualityScores: (rawResult.quality_scores as QualityScores) ?? {
+            citations: (rawResult.citations ?? []) as Citation[],
+            qualityScores: (rawResult.qualityScores as QualityScores) ?? {
               comprehensiveness: 0,
               insight: 0,
               instruction_following: 0,
               readability: 0,
             },
-            searchIterations: (rawResult.search_iterations as number) ?? 0,
+            searchIterations: (rawResult.searchIterations as number) ?? 0,
             revisions: (rawResult.revisions as number) ?? 0,
           } satisfies ResearchResult)
         : undefined;
@@ -202,6 +180,12 @@ function dispatchEvent(event: string, data: Record<string, unknown>, cb: StreamC
 // ---------------------------------------------------------------------------
 // Settings API
 // ---------------------------------------------------------------------------
+
+export interface SearchApiStatus {
+  jina: boolean;
+  brave: boolean;
+  tavily: boolean;
+}
 
 export interface AgentSettings {
   llmProvider: string;
@@ -226,26 +210,26 @@ export interface AgentSettings {
   jinaApiKey: string;
   braveApiKey: string;
   tavilyApiKey: string;
+  // Search API availability
+  searchApiStatus?: SearchApiStatus;
 }
 
 export async function getSettings(): Promise<AgentSettings> {
   const res = await fetch(`${API_BASE}/settings`);
-  const data = await res.json();
-  return convertKeys<AgentSettings>(data);
+  if (!res.ok) {
+    throw new Error(`Failed to load settings: HTTP ${res.status}`);
+  }
+  return res.json();
 }
 
 export async function updateSettings(updates: Partial<AgentSettings>): Promise<AgentSettings> {
-  // Convert camelCase keys back to snake_case for the API
-  const snakeUpdates: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(updates)) {
-    const snakeKey = key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
-    snakeUpdates[snakeKey] = value;
-  }
   const res = await fetch(`${API_BASE}/settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(snakeUpdates),
+    body: JSON.stringify(updates),
   });
-  const data = await res.json();
-  return convertKeys<AgentSettings>(data);
+  if (!res.ok) {
+    throw new Error(`Failed to save settings: HTTP ${res.status}`);
+  }
+  return res.json();
 }
