@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
-import { ChevronDown, ChevronRight, Network, ArrowRight, Minimize2, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Network, ArrowRight, Minimize2, Search, Crosshair } from "lucide-react";
 import type { KGEntity, KGRelation } from "@/lib/sample-data";
 
 const ForceGraph = dynamic(() => import("./force-graph"), {
@@ -29,7 +29,7 @@ const entityTypeColors: Record<string, string> = {
 };
 
 type GraphSize = "md" | "full";
-const sizeHeights: Record<Exclude<GraphSize, "full">, number> = { md: 500 };
+const sizeHeights: Record<Exclude<GraphSize, "full">, number> = { md: 600 };
 
 const sizeLabels: { key: GraphSize; label: string }[] = [
   { key: "md", label: "M" },
@@ -97,6 +97,21 @@ export function KnowledgeGraphPanel({ entities, relations }: KnowledgeGraphPanel
                 {label}
               </button>
             ))}
+            <button
+              onClick={() => {
+                // Find the ForceGraph container and call its fitView method
+                const container = document.querySelector("[data-graph-container]");
+                if (container) {
+                  const fitView = (container as unknown as Record<string, unknown>).__fitView;
+                  if (typeof fitView === "function") fitView();
+                }
+              }}
+              className="rounded px-2 py-0.5 text-xs font-medium bg-muted text-muted-foreground hover:bg-muted/80 transition-colors flex items-center gap-1"
+              title="Reset zoom to fit all nodes"
+            >
+              <Crosshair className="h-3 w-3" />
+              Fit
+            </button>
             <div className="relative ml-auto">
               <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
               <input
