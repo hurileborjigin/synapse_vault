@@ -38,33 +38,8 @@ Open [http://localhost:3000](http://localhost:3000) to start researching.
 
 ### Environment Variables
 
-Set in `.env.local`:
+Set in `.env.local`.
 
-```bash
-# LLM Provider (anthropic | openai | azure_openai | compatible)
-SYNAPSE_LLM_PROVIDER=anthropic
-SYNAPSE_LLM_MODEL=claude-sonnet-4-20250514
-
-# Provider API keys (set the one matching your provider)
-ANTHROPIC_API_KEY=sk-...
-OPENAI_API_KEY=
-AZURE_OPENAI_API_KEY=
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
-AZURE_OPENAI_API_VERSION=2024-06-01
-COMPATIBLE_API_KEY=
-COMPATIBLE_BASE_URL=
-
-# Per-node model overrides (optional, falls back to SYNAPSE_LLM_MODEL)
-SYNAPSE_ANALYZER_MODEL=
-SYNAPSE_SEARCHER_MODEL=
-SYNAPSE_SYNTHESIZER_MODEL=
-SYNAPSE_QUALITY_MODEL=
-
-# Search APIs (at least one required)
-JINA_API_KEY=jina_...
-BRAVE_API_KEY=
-TAVILY_API_KEY=tvly-...
-```
 
 ### Workflow Tuning
 
