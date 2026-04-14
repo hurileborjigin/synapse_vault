@@ -32,20 +32,7 @@ Open [http://localhost:3000](http://localhost:3000) to start researching.
 7. **Synthesis** — Generates structured article with `[N]` inline citations from verified source URLs; uses context-aware token budgeting
 8. **Quality Gate** — RACE-aligned self-evaluation; revises if scores are below threshold
 
-```
-query_analyzer → [approval interrupt] → searcher → ranker → knowledge_graph ─┐
-                                                                    │         │
-                                                          [gaps + iter < max?]
-                                                               no │    │ yes
-                                                                  ▼    │
-                                                             synthesizer ──┘
-                                                                  │
-                                                             quality_gate
-                                                                  │
-                                                        [passed or max revisions?]
-                                                             yes │    │ no
-                                                                END ──┘
-```
+![Workflow](./SynapseVault%20Workflow.png)
 
 ## Configuration
 
